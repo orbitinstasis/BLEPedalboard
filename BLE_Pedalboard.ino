@@ -24,6 +24,10 @@
 #define MOD "          MOD"
 #define DLY "              DLY"
 #define REV "                  REV"
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define SERVICE_UUID        "03b80e5a-ede8-4b33-a751-6ce34ec4c700"
+#define CHARACTERISTIC_UUID "7772e5db-3868-4112-a1a9-f2669d106bf3"
 
 // Bluetooth Includes
 #include <BLEDevice.h>
@@ -41,12 +45,6 @@
 #include <Fonts/FreeSerifItalic12pt7b.h>
 #include <Fonts/FreeSerif12pt7b.h>
 
-#define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 64 // OLED display height, in pixels
-
-#define SERVICE_UUID        "03b80e5a-ede8-4b33-a751-6ce34ec4c700"
-#define CHARACTERISTIC_UUID "7772e5db-3868-4112-a1a9-f2669d106bf3"
-
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
@@ -56,16 +54,13 @@ bool deviceConnected = false;
 bool connected = true;
 
 // CC Numner for modes 0 (preset) and 1 (effect)
-uint8_t ccnumber[5][2] = {{0x14, 0x19}, {0x15, 0x1A}, {0x16, 0x1B}, {0x17, 0x1C}, {0x18, 0x1D}};
-bool opmode = 0; // current operation modes 0 (preset) and 1 (effect)
-volatile int pushedbutton = 0; // Pushed Button
-volatile bool sendmidi = false;
+uint8_t ccNumber[5][2] = {{0x14, 0x19}, {0x15, 0x1A}, {0x16, 0x1B}, {0x17, 0x1C}, {0x18, 0x1D}};
+bool opMode = 0; // current operation modes 0 (preset) and 1 (effect)
+volatile int pushedButton = 0; // Pushed Button
+volatile bool sendMidi = false;
 volatile bool pushed = false;
-int currpreset = 1;
-
-float measuredvbat = 0;
-
-volatile boolean inMidiSend = false;
+int currentPreset = 1;
+float batV = 0;
 unsigned long previousBatMillis = 0;
 volatile unsigned long previousPushedMillis = 0;
 
@@ -135,13 +130,13 @@ void setup() {
   pinMode(BUTTON_3, INPUT_PULLUP);
   pinMode(BUTTON_4, INPUT_PULLUP);
   pinMode(BUTTON_5, INPUT_PULLUP);
-  // Interrputs on button push  attachInterrupt(digitalPinToInterrupt(BUTTON_0), buttonevent_0, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_0), buttonevent_0, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_1), buttonevent_1, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_2), buttonevent_2, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_3), buttonevent_3, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_4), buttonevent_4, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_5), buttonevent_5, FALLING);
+  // Interrputs on button push  attachInterrupt(digitalPinToInterrupt(BUTTON_0), buttonEvent_0, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_0), buttonEvent_0, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_1), buttonEvent_1, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_2), buttonEvent_2, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_3), buttonEvent_3, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_4), buttonEvent_4, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_5), buttonEvent_5, FALLING);
 }
 
 void loop() {
@@ -162,22 +157,22 @@ void loop() {
 
     if (pushed) {
       boolean isLegit = false;  
-      if (pushedbutton == BUTTON_MODE_CHANGE && (millis() - previousPushedMillis >= 75)) { // changing mode debounce fast 
-        opmode = !opmode;
+      if (pushedButton == BUTTON_MODE_CHANGE && (millis() - previousPushedMillis >= 75)) { // changing mode debounce fast 
+        opMode = !opMode;
         isLegit = true;
-      } else if (opmode == MODE_PRESET && pushedbutton < 5  && (millis() - previousPushedMillis >= INTERVAL_PUSHED_PRESET)) {  // changing preset 
-        currpreset = pushedbutton + 1;
+      } else if (opMode == MODE_PRESET && pushedButton < 5  && (millis() - previousPushedMillis >= INTERVAL_PUSHED_PRESET)) {  // changing preset 
+        currentPreset = pushedButton + 1;
         isLegit = true;
-      } else if (opmode == MODE_EFFECT && pushedbutton != BUTTON_MODE_CHANGE  && (millis() - previousPushedMillis >= INTERVAL_PUSHED_EFFECT)) { // changing effect
+      } else if (opMode == MODE_EFFECT && pushedButton != BUTTON_MODE_CHANGE  && (millis() - previousPushedMillis >= INTERVAL_PUSHED_EFFECT)) { // changing effect
         isLegit = true;    
       }
 
-      if (opmode == MODE_PRESET && isLegit) { //show preset
+      if (opMode == MODE_PRESET && isLegit) { //show preset
         display.clearDisplay();
         display.setCursor(50, 20);
         display.setTextSize(5);
         display.setTextColor(WHITE);
-        display.println(currpreset);
+        display.println(currentPreset);
         display.setCursor(40, 55);
         display.setTextSize(1);
         display.setCursor(0, 9);
@@ -186,12 +181,12 @@ void loop() {
         display.setFont();
         printBat();
         display.display();
-      } else if (opmode == MODE_EFFECT && isLegit) {  // show effects
+      } else if (opMode == MODE_EFFECT && isLegit) {  // show effects
         display.clearDisplay();
         display.setCursor(55, 16);
         display.setTextSize(4);
         display.setTextColor(WHITE);
-        display.println(currpreset);
+        display.println(currentPreset);
         display.setCursor(0, 56);
         display.setTextSize(1);
         display.println("COMP GATE MOD DLY REV"); // 21 chars
@@ -203,9 +198,9 @@ void loop() {
         display.display();
       }
 
-      if (sendmidi && isLegit)  {  // send MIDI data
+      if (sendMidi && isLegit)  {  // send MIDI data
         // Send Push
-        midiPacket[3] = ccnumber[pushedbutton][opmode]; // test code, change to pushedbutton
+        midiPacket[3] = ccNumber[pushedButton][opMode]; // test code, change to pushedButton
         midiPacket[4] = 0x7F; // CC Max Value
         pCharacteristic->setValue(midiPacket, 5); // packet, length in bytes
         pCharacteristic->notify();
@@ -216,11 +211,11 @@ void loop() {
         pCharacteristic->notify();
         **/
       }
-      sendmidi = false;  // clear flags even if not legit triggers
+      sendMidi = false;  // clear flags even if not legit triggers
       pushed = false;
       if (isLegit) { // save legit trigger times
         previousPushedMillis = millis();  // take last legit reading 
-        if (opmode == MODE_EFFECT && pushedbutton != BUTTON_MODE_CHANGE)
+        if (opMode == MODE_EFFECT && pushedButton != BUTTON_MODE_CHANGE)
           selectedFX();
       }
       interrupts();
@@ -240,50 +235,49 @@ void loop() {
   }
 }
 
-void _pushed(volatile boolean sentMidi, volatile int pushedBut) {
+/**
+ * process common functionality for the button interrupts 
+ * 
+ * @param sentMidi are we sending midi
+ * @param pushedBut which button have we pushed
+ * 
+ */
+void buttonEvent(volatile boolean sentMidi, volatile int pushedBut) {
   noInterrupts(); // we don't want button pushes to change boolean flags when we're processing existing trigger
   if (sentMidi)
-    sendmidi = true;
-  pushedbutton = pushedBut;
+    sendMidi = true;
+  pushedButton = pushedBut;
   pushed = true;
 }
 
-void  buttonevent_0() {
-  _pushed(true, 0);
+void  buttonEvent_0() {
+  buttonEvent(true, 0);
 }
 
-void  buttonevent_1() {
-  _pushed(true, 1);
+void  buttonEvent_1() {
+  buttonEvent(true, 1);
 }
 
-void  buttonevent_2() {
-  _pushed(true, 2);
+void  buttonEvent_2() {
+  buttonEvent(true, 2);
 }
 
-void  buttonevent_3() {
-  _pushed(true, 3);
+void  buttonEvent_3() {
+  buttonEvent(true, 3);
 }
 
-void buttonevent_4() {
-  _pushed(true, 4);
+void buttonEvent_4() {
+  buttonEvent(true, 4);
 }
 
-void  buttonevent_5() {
-  _pushed(false, 5);
+void  buttonEvent_5() {
+  buttonEvent(false, 5);
 }
 
-void getBat() {  
-  if (millis() - previousBatMillis >= INTERVAL_BAT) {
-    previousBatMillis = millis();
-    measuredvbat = analogRead(VBATPIN);
-    measuredvbat /= 4095; // convert to voltage
-    measuredvbat *= 2;    // we divided by 2, so multiply back
-    measuredvbat *= 3.177;  // Multiply by 3.3V, our reference voltage (this changes depending on power source)
-    measuredvbat *= 1.107;  // Multiply by 1.1V, our ADC reference voltage
-    printBat();
-  }
-}
-
+/**
+ * Momentarily show the effect you just triggered 
+ * This uses a blocking delay which is acceptable since the duration is lower than the non blocking delay that accepts a new instruction 
+ */
 void selectedFX() {
   display.setCursor(0, 56);
   display.setTextSize(1);
@@ -291,7 +285,7 @@ void selectedFX() {
   display.println("                     "); // 21 chars
   display.setTextColor(WHITE);
   display.setCursor(0, 56);
-  switch (pushedbutton) {
+  switch (pushedButton) {
     case 0:
       display.println(COMP); // 21 chars
       break;
@@ -315,6 +309,25 @@ void selectedFX() {
 
 }
 
+/**
+ * Measure a new voltage reading for the attached battery and store it 
+ * The reference voltage changes depending on the power source
+ */
+void getBat() {  
+  if (millis() - previousBatMillis >= INTERVAL_BAT) {
+    previousBatMillis = millis();
+    batV = analogRead(VBATPIN);
+    batV /= 4095; // convert to voltage
+    batV *= 2;    // we divided by 2, so multiply back
+    batV *= 3.177;  // Multiply by 3.3V, our reference voltage (this changes depending on power source)
+    batV *= 1.107;  // Multiply by 1.1V, our ADC reference voltage
+    printBat();
+  }
+}
+
+/**
+ * print the global variable holding the battery voltage to the OLED correctly formatted 
+ */
 void printBat() {
   display.setFont();
   display.setTextSize(1);
@@ -323,7 +336,7 @@ void printBat() {
   display.print("      ");
   display.setCursor(92, 0);
   display.setTextColor(WHITE);
-  display.print(measuredvbat);
+  display.print(batV);
   display.println(" V");
   display.display();
 }
