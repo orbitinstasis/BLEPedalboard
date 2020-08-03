@@ -16,8 +16,8 @@ Forked from the original:
 ## TODO
 - Refactor 
 
-
-Bluethooth BLE Pedalboard
+# Original README
+###Bluethooth BLE Pedalboard
 
 This pedalboard is targeted to work Yamaha ThrII series amps, but can be adapted to work with any Midi Bluetooth device.
 
