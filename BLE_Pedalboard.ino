@@ -4,19 +4,42 @@
 
     Based on BLE_notify example by Evandro Copercini.
     Creates a BLE MIDI service and characteristic.
-    Once a client subscibes, send a MIDI message every 2 seconds
+    Once a client subscribes, send a MIDI message every 2 seconds
 */
+#define VBATPIN A13
+#define INTERVAL_BAT 2000
+#define INTERVAL_PUSHED_PRESET 1300  // Button delay time to prevent flapping - Setting this lower than 1,2s crashes the thr android app
+#define INTERVAL_PUSHED_EFFECT 350
+#define BUTTON_0 12
+#define BUTTON_1 14
+#define BUTTON_2 32
+#define BUTTON_3 27
+#define BUTTON_4 15
+#define BUTTON_5 33
+#define MODE_PRESET false
+#define MODE_EFFECT true
+#define BUTTON_MODE_CHANGE 5
+#define COMP "COMP"
+#define GATE "     GATE"
+#define MOD "          MOD"
+#define DLY "              DLY"
+#define REV "                  REV"
+
 // Bluetooth Includes
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
 #include <BLE2902.h>
 
+// OLED SSD1306 includes
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>  // Check if needed
 #include <Adafruit_SSD1306.h>
 
+//GFX Fonts
+#include <Fonts/FreeSerifItalic12pt7b.h>
+#include <Fonts/FreeSerif12pt7b.h>
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -32,17 +55,6 @@ BLECharacteristic *pCharacteristic;
 bool deviceConnected = false;
 bool connected = true;
 
-// GPIO for each button
-
-int button_0 = 13;
-int button_1 = 25;
-int button_2 = 26;
-int button_3 = 27;
-int button_4 = 32;
-int button_m = 33;
-
-int buttondelay = 1200; // Button delay time to prevent flapping - Setting this lower than 1,2s crashes the thr android app
-
 // CC Numner for modes 0 (preset) and 1 (effect)
 uint8_t ccnumber[5][2] = {{0x14, 0x19}, {0x15, 0x1A}, {0x16, 0x1B}, {0x17, 0x1C}, {0x18, 0x1D}};
 bool opmode = 0; // current operation modes 0 (preset) and 1 (effect)
@@ -50,6 +62,12 @@ volatile int pushedbutton = 0; // Pushed Button
 volatile bool sendmidi = false;
 volatile bool pushed = false;
 int currpreset = 1;
+
+float measuredvbat = 0;
+
+volatile boolean inMidiSend = false;
+unsigned long previousBatMillis = 0;
+volatile unsigned long previousPushedMillis = 0;
 
 uint8_t midiPacket[] = {
   0x80,  // header
@@ -70,10 +88,12 @@ class MyServerCallbacks: public BLEServerCallbacks {
 };
 
 void setup() {
-  Serial.begin(115200);
+//  Serial.begin(115200);
+
+  setCpuFrequencyMhz(80); //Set CPU clock to 80MHz fo example
 
   // Bluetooth Setup
-  BLEDevice::init("BLE Floorboard");
+  BLEDevice::init("Kazemi's Floorboard");
 
   // Create the BLE Server
   BLEServer *pServer = BLEDevice::createServer();
@@ -89,6 +109,7 @@ void setup() {
                       BLECharacteristic::PROPERTY_WRITE_NR
                     );
   // https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.descriptor.gatt.client_characteristic_configuration.xml
+  // https://learn.sparkfun.com/tutorials/midi-ble-tutorial/all
   // Create a BLE Descriptor
   pCharacteristic->addDescriptor(new BLE2902());
   // Start the service
@@ -100,148 +121,209 @@ void setup() {
 
   // Display Setup
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
-    Serial.println(F("SSD1306 allocation failed"));
+//    Serial.println(F("SSD1306 allocation failed"));
     for (;;);
   }
   display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
 
   // GPIO Setup
-  pinMode(button_0, INPUT_PULLUP);
-  pinMode(button_1, INPUT_PULLUP);
-  pinMode(button_2, INPUT_PULLUP);
-  pinMode(button_3, INPUT_PULLUP);
-  pinMode(button_4, INPUT_PULLUP);
-  pinMode(button_m, INPUT_PULLUP);
-  // Interrputs on button push  attachInterrupt(digitalPinToInterrupt(button_0), buttonevent_0, FALLING);
-  attachInterrupt(digitalPinToInterrupt(button_0), buttonevent_0, FALLING);
-  attachInterrupt(digitalPinToInterrupt(button_1), buttonevent_1, FALLING);
-  attachInterrupt(digitalPinToInterrupt(button_2), buttonevent_2, FALLING);
-  attachInterrupt(digitalPinToInterrupt(button_3), buttonevent_3, FALLING);
-  attachInterrupt(digitalPinToInterrupt(button_4), buttonevent_4, FALLING);
-  attachInterrupt(digitalPinToInterrupt(button_m), buttonevent_m, FALLING);
+  pinMode(BUTTON_0, INPUT_PULLUP);
+  pinMode(BUTTON_1, INPUT_PULLUP);
+  pinMode(BUTTON_2, INPUT_PULLUP);
+  pinMode(BUTTON_3, INPUT_PULLUP);
+  pinMode(BUTTON_4, INPUT_PULLUP);
+  pinMode(BUTTON_5, INPUT_PULLUP);
+  // Interrputs on button push  attachInterrupt(digitalPinToInterrupt(BUTTON_0), buttonevent_0, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_0), buttonevent_0, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_1), buttonevent_1, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_2), buttonevent_2, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_3), buttonevent_3, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_4), buttonevent_4, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_5), buttonevent_5, FALLING);
 }
 
 void loop() {
+  getBat();
+
   if (deviceConnected) {
-    if (!connected) { //First screen update / uknown patch
+    //First screen update / uknown patch
+    if (!connected) { 
       connected = true;
       display.clearDisplay();
-      display.setCursor(50, 5);
+      display.setCursor(50, 20);
       display.setTextSize(5);
       display.setTextColor(WHITE);
-      // Display static text
-      display.println("?");
-      display.setCursor(40, 55);
-      display.setTextSize(1);
-      display.setTextColor(WHITE);
-      display.println("M:PRESSET");
+      display.println("?");            
+      printBat();
       display.display();
     }
+
     if (pushed) {
-      pushed = false;
-      if (pushedbutton == 5) {
+      boolean isLegit = false;  
+      if (pushedbutton == BUTTON_MODE_CHANGE && (millis() - previousPushedMillis >= 75)) { // changing mode debounce fast 
         opmode = !opmode;
-      } else {
-        if (opmode==false) currpreset = pushedbutton + 1;
+        isLegit = true;
+      } else if (opmode == MODE_PRESET && pushedbutton < 5  && (millis() - previousPushedMillis >= INTERVAL_PUSHED_PRESET)) {  // changing preset 
+        currpreset = pushedbutton + 1;
+        isLegit = true;
+      } else if (opmode == MODE_EFFECT && pushedbutton != BUTTON_MODE_CHANGE  && (millis() - previousPushedMillis >= INTERVAL_PUSHED_EFFECT)) { // changing effect
+        isLegit = true;    
       }
-      if (opmode ==  false) {
+
+      if (opmode == MODE_PRESET && isLegit) { //show preset
         display.clearDisplay();
-        display.setCursor(50, 5);
+        display.setCursor(50, 20);
         display.setTextSize(5);
         display.setTextColor(WHITE);
         display.println(currpreset);
         display.setCursor(40, 55);
         display.setTextSize(1);
-        display.setTextColor(WHITE);
-        display.println("M:PRESSET");
+        display.setCursor(0, 9);
+        display.setFont(&FreeSerif12pt7b);
+        display.println("Preset");
+        display.setFont();
+        printBat();
         display.display();
-      } else {
+      } else if (opmode == MODE_EFFECT && isLegit) {  // show effects
         display.clearDisplay();
-        display.setTextSize(1);
-        display.setCursor(0, 5);
-        display.println("1-CMP");
-        display.setCursor(1, 15);
-        display.println("2-NG");
-        display.setCursor(1, 25);
-        display.println("3-MOD");
-        display.setCursor(1, 35);
-        display.println("4-DLY");
-        display.setCursor(1, 45);
-        display.println("5-REV");
-        display.setCursor(50, 5);
-        display.setTextSize(5);
+        display.setCursor(55, 16);
+        display.setTextSize(4);
         display.setTextColor(WHITE);
         display.println(currpreset);
-        display.setCursor(40, 55);
+        display.setCursor(0, 56);
         display.setTextSize(1);
-        display.setTextColor(WHITE);
-        display.println("M:EFFECT");
+        display.println("COMP GATE MOD DLY REV"); // 21 chars
+        display.setCursor(0, 9);
+        display.setFont(&FreeSerif12pt7b);
+        display.println("FX");
+        display.setFont();
+        printBat();
         display.display();
       }
-      if (sendmidi) {
+
+      if (sendmidi && isLegit)  {  // send MIDI data
         // Send Push
         midiPacket[3] = ccnumber[pushedbutton][opmode]; // test code, change to pushedbutton
         midiPacket[4] = 0x7F; // CC Max Value
         pCharacteristic->setValue(midiPacket, 5); // packet, length in bytes
         pCharacteristic->notify();
-
-
-        // Send release - Not needed on the thr
-        //midiPacket[4]=0x00; // CC Min Value (Release)
-        //pCharacteristic->setValue(midiPacket, 5); // packet, length in bytes
-        //pCharacteristic->notify();
-
-        sendmidi = false;
+        /**
+        // Send release - Not needed on the THR
+        midiPacket[4]=0x00; // CC Min Value (Release)
+        pCharacteristic->setValue(midiPacket, 5); // packet, length in bytes
+        pCharacteristic->notify();
+        **/
       }
-
-      delay(buttondelay);
-      pushed = false;//
+      sendmidi = false;  // clear flags even if not legit triggers
+      pushed = false;
+      if (isLegit) { // save legit trigger times
+        previousPushedMillis = millis();  // take last legit reading 
+        if (opmode == MODE_EFFECT && pushedbutton != BUTTON_MODE_CHANGE)
+          selectedFX();
+      }
+      interrupts();
     }
   } else if (connected) { // Update the display only when Connectio status is changed
     connected = false;
     display.clearDisplay();
-    display.setCursor(1, 1);
-    display.setTextSize(1);
-    display.setTextColor(WHITE);
-    display.println("RadioactiveToy");
-    display.println("BLE Pedalboard");
-    display.println("Bluetooth not connected");
+    display.setCursor(4, 9);
+    display.setFont(&FreeSerif12pt7b);
+    display.println("Kazemi..");
+    display.setFont(&FreeSerifItalic12pt7b);
+    display.setCursor(1, 31);
+    display.println("Connect");
+    display.println("      Bluetooth");
+    printBat();
     display.display();
   }
 }
 
+void _pushed(volatile boolean sentMidi, volatile int pushedBut) {
+  noInterrupts(); // we don't want button pushes to change boolean flags when we're processing existing trigger
+  if (sentMidi)
+    sendmidi = true;
+  pushedbutton = pushedBut;
+  pushed = true;
+}
 
 void  buttonevent_0() {
-  sendmidi = true;
-  pushedbutton = 0;
-  pushed = true;
+  _pushed(true, 0);
 }
 
 void  buttonevent_1() {
-  sendmidi = true;
-  pushedbutton = 1;
-  pushed = true;
+  _pushed(true, 1);
 }
 
 void  buttonevent_2() {
-  sendmidi = true;
-  pushedbutton = 2;
-  pushed = true;
+  _pushed(true, 2);
 }
 
 void  buttonevent_3() {
-  sendmidi = true;
-  pushedbutton = 3;
-  pushed = true;
+  _pushed(true, 3);
 }
 
 void buttonevent_4() {
-  sendmidi = true;
-  pushedbutton = 4;
-  pushed = true;
+  _pushed(true, 4);
 }
 
-void  buttonevent_m() {
-  pushedbutton = 5;
-  pushed = true;
+void  buttonevent_5() {
+  _pushed(false, 5);
+}
+
+void getBat() {  
+  if (millis() - previousBatMillis >= INTERVAL_BAT) {
+    previousBatMillis = millis();
+    measuredvbat = analogRead(VBATPIN);
+    measuredvbat /= 4095; // convert to voltage
+    measuredvbat *= 2;    // we divided by 2, so multiply back
+    measuredvbat *= 3.177;  // Multiply by 3.3V, our reference voltage (this changes depending on power source)
+    measuredvbat *= 1.107;  // Multiply by 1.1V, our ADC reference voltage
+    printBat();
+  }
+}
+
+void selectedFX() {
+  display.setCursor(0, 56);
+  display.setTextSize(1);
+  display.setTextColor(WHITE, BLACK);
+  display.println("                     "); // 21 chars
+  display.setTextColor(WHITE);
+  display.setCursor(0, 56);
+  switch (pushedbutton) {
+    case 0:
+      display.println(COMP); // 21 chars
+      break;
+    case 1:
+      display.println(GATE); // 21 chars
+      break;
+    case 2:
+      display.println(MOD); // 21 chars
+      break;
+    case 3:
+      display.println(DLY); // 21 chars
+      break;
+    case 4:
+      display.println(REV); // 21 chars
+  }
+  display.display();
+  delay(250);
+  display.setCursor(0, 56);
+  display.println("COMP GATE MOD DLY REV"); // 21 chars
+  display.display();
+
+}
+
+void printBat() {
+  display.setFont();
+  display.setTextSize(1);
+  display.setCursor(92, 0);
+  display.setTextColor(WHITE, BLACK);
+  display.print("      ");
+  display.setCursor(92, 0);
+  display.setTextColor(WHITE);
+  display.print(measuredvbat);
+  display.println(" V");
+  display.display();
 }
